@@ -1,10 +1,38 @@
 @echo off
 REM Build min_repro.cc with the same flags Firefox CI uses for security_descriptor.cc.
-REM Assumes clang-cl is on PATH and a "VS 2026 18.6 x64" developer environment is active
-REM (or that ASan / MSVC headers are otherwise reachable).
+REM Requires a "VS 2026 18.6 x64" developer environment to be active (so MSVC
+REM headers and the runtime libs are reachable).
+REM
+REM clang-cl is found in this order:
+REM   1. CLANG_CL env var, if set
+REM   2. clang-cl on PATH
+REM   3. %USERPROFILE%\.mozbuild\clang\bin (the standard Mozilla bootstrap location)
 
 setlocal
 set "OUT_EXE=min_repro.exe"
+
+if defined CLANG_CL (
+    set "CLANG_CL_EXE=%CLANG_CL%"
+    goto :have_clang
+)
+
+where clang-cl >nul 2>nul
+if not errorlevel 1 (
+    set "CLANG_CL_EXE=clang-cl"
+    goto :have_clang
+)
+
+if exist "%USERPROFILE%\.mozbuild\clang\bin\clang-cl.exe" (
+    set "CLANG_CL_EXE=%USERPROFILE%\.mozbuild\clang\bin\clang-cl.exe"
+    goto :have_clang
+)
+
+echo Could not find clang-cl. Set CLANG_CL, add it to PATH, or install
+echo Mozilla's bootstrap clang to %%USERPROFILE%%\.mozbuild\clang\bin.
+exit /b 1
+
+:have_clang
+echo Using clang-cl: %CLANG_CL_EXE%
 
 REM Flags that match Firefox's Windows ASan build for security/sandbox/chromium:
 REM   -fms-compatibility-version=19.51    target MSVC 14.51 (VS 2026 18.6)
@@ -18,7 +46,7 @@ REM   -D_HAS_EXCEPTIONS=0                 CI default
 REM   -GR-                                no RTTI (matches CI)
 REM   -O2 -Oy-                            CI optimization profile
 REM   -Z7                                 debug info
-clang-cl ^
+"%CLANG_CL_EXE%" ^
     -fms-compatibility-version=19.51 ^
     -std:c++20 ^
     -fsanitize=address ^

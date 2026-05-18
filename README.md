@@ -35,9 +35,18 @@ so we can:
 
 ## Build
 
-Requires a `clang-cl` that matches Firefox CI (Mozilla's prebuilt clang-20) and
-a VS 2026 18.6 developer environment (so MSVC 14.51 headers and the runtime
-are reachable). Then:
+Requires:
+
+- A VS 2026 18.6 x64 developer command prompt active (so MSVC 14.51 headers
+  and runtime libs are reachable).
+- A `clang-cl` matching Firefox CI (Mozilla's prebuilt clang-20). `build.bat`
+  looks for it in this order:
+  1. `%CLANG_CL%` env var
+  2. `clang-cl` on `PATH`
+  3. `%USERPROFILE%\.mozbuild\clang\bin\clang-cl.exe` (the standard location
+     that Firefox's `mach bootstrap` installs to)
+
+Then:
 
 ```
 build.bat
