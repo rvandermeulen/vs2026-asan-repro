@@ -67,4 +67,26 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Copy the matching ASan runtime DLL next to the .exe. Without this, Windows
+REM picks up whichever clang_rt.asan_dynamic-x86_64.dll happens to be first on
+REM PATH (e.g. the one from MSVC's AddressSanitizer component), which will be
+REM ABI-incompatible with the binary we just linked.
+set "ASAN_DLL_NAME=clang_rt.asan_dynamic-x86_64.dll"
+set "ASAN_DLL_SRC="
+for /f "delims=" %%I in ('dir /s /b "%~dp0..\..\.mozbuild\clang\%ASAN_DLL_NAME%" 2^>nul') do (
+    set "ASAN_DLL_SRC=%%I"
+)
+if not defined ASAN_DLL_SRC (
+    for /f "delims=" %%I in ('dir /s /b "%USERPROFILE%\.mozbuild\clang\%ASAN_DLL_NAME%" 2^>nul') do (
+        set "ASAN_DLL_SRC=%%I"
+    )
+)
+if defined ASAN_DLL_SRC (
+    echo Copying %ASAN_DLL_SRC%
+    copy /y "%ASAN_DLL_SRC%" "%~dp0%ASAN_DLL_NAME%" >nul
+) else (
+    echo WARNING: could not find %ASAN_DLL_NAME% to colocate with %OUT_EXE%.
+    echo The exe will likely pick up a mismatched ASan runtime at launch.
+)
+
 echo Built %OUT_EXE%
