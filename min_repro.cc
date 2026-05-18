@@ -215,29 +215,47 @@ static std::optional<SecurityDescriptor> FromHandle(HANDLE object,
   return sd;
 }
 
+// Mirror of sandbox::HardenTokenIntegrityLevelPolicy in
+// security/sandbox/chromium/sandbox/win/src/restricted_token_utils.cc.
+// This is the exact function whose stack frame contains the use-after-poisoned
+// 'sd' in the Firefox CI failure.
+DWORD HardenTokenIntegrityLevelPolicy(HANDLE token) {
+  std::optional<SecurityDescriptor> sd =
+      FromHandle(token, SE_KERNEL_OBJECT, LABEL_SECURITY_INFORMATION);
+  if (!sd) {
+    return ::GetLastError();
+  }
+
+  // If no SACL then nothing to do.
+  if (!sd->sacl()) {
+    return ERROR_SUCCESS;
+  }
+  PACL sacl = reinterpret_cast<PACL>(sd->sacl()->get());
+
+  for (DWORD ace_index = 0; ace_index < sacl->AceCount; ++ace_index) {
+    PSYSTEM_MANDATORY_LABEL_ACE ace;
+    if (::GetAce(sacl, ace_index, reinterpret_cast<LPVOID*>(&ace)) &&
+        ace->Header.AceType == SYSTEM_MANDATORY_LABEL_ACE_TYPE) {
+      ace->Mask |= SYSTEM_MANDATORY_LABEL_NO_READ_UP |
+                   SYSTEM_MANDATORY_LABEL_NO_EXECUTE_UP;
+      break;
+    }
+  }
+  if (!sd->WriteToHandle(token, SE_KERNEL_OBJECT,
+                         LABEL_SECURITY_INFORMATION)) {
+    return ::GetLastError();
+  }
+  return ERROR_SUCCESS;
+}
+
 int main() {
-  // Mirror Chromium's HardenTokenIntegrityLevelPolicy: open the current
-  // process token and read its label SACL.
   HANDLE token = nullptr;
   if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_ALL_ACCESS, &token)) {
     std::fprintf(stderr, "OpenProcessToken failed: %lu\n", ::GetLastError());
     return 1;
   }
-
-  std::optional<SecurityDescriptor> sd =
-      FromHandle(token, SE_KERNEL_OBJECT, LABEL_SECURITY_INFORMATION);
+  DWORD result = HardenTokenIntegrityLevelPolicy(token);
   ::CloseHandle(token);
-  if (!sd) {
-    return 1;
-  }
-  // Reopen the token so we have a live handle to pass back into the
-  // round-trip SetSecurityInfo call.
-  HANDLE token2 = nullptr;
-  if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_ALL_ACCESS, &token2)) {
-    std::fprintf(stderr, "OpenProcessToken#2 failed: %lu\n", ::GetLastError());
-    return 1;
-  }
-  sd->WriteToHandle(token2, SE_KERNEL_OBJECT, LABEL_SECURITY_INFORMATION);
-  ::CloseHandle(token2);
+  std::printf("HardenTokenIntegrityLevelPolicy result=%lu\n", result);
   return 0;
 }
