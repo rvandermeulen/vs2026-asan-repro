@@ -56,6 +56,7 @@ REM   -Z7                                 debug info
     -D_DISABLE_STRING_ANNOTATION ^
     -D_HAS_EXCEPTIONS=0 ^
     -GR- ^
+    -MD ^
     -O2 -Oy- ^
     -Z7 ^
     min_repro.cc ^

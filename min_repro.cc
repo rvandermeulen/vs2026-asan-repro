@@ -79,15 +79,19 @@ class SecurityDescriptor {
   void set_dacl(AccessControlList a) { dacl_ = std::move(a); }
   void set_sacl(AccessControlList a) { sacl_ = std::move(a); }
 
-  // Mimic WriteToHandle: reads all four optional members. In Chromium this is
-  // where the use-after-poison fires (security_descriptor.cc:166).
-  bool WriteToHandle() const {
-    const void* o = owner_ ? owner_->GetPSID() : nullptr;
-    const void* g = group_ ? group_->GetPSID() : nullptr;
-    void* d = dacl_ ? dacl_->get() : nullptr;
-    void* s = sacl_ ? sacl_->get() : nullptr;
-    std::printf("o=%p g=%p d=%p s=%p\n", o, g, d, s);
-    return true;
+  // Mimic Chromium's SetSecurityDescriptor: read all four optional members
+  // and pass through to SetSecurityInfo, matching the call shape that crashes
+  // at security_descriptor.cc:166. The SetSecurityInfo call having a real side
+  // effect prevents the compiler from optimising the optional accesses away.
+  bool WriteToHandle(HANDLE object, SE_OBJECT_TYPE type,
+                     SECURITY_INFORMATION info) const {
+    PSID o = owner_ ? const_cast<PSID>(owner_->GetPSID()) : nullptr;
+    PSID g = group_ ? const_cast<PSID>(group_->GetPSID()) : nullptr;
+    PACL d = dacl_ ? reinterpret_cast<PACL>(dacl_->get()) : nullptr;
+    PACL s = sacl_ ? reinterpret_cast<PACL>(sacl_->get()) : nullptr;
+    DWORD err = ::SetSecurityInfo(object, type, info, o, g, d, s);
+    std::printf("SetSecurityInfo err=%lu\n", err);
+    return err == ERROR_SUCCESS;
   }
 
  private:
@@ -170,6 +174,14 @@ int main() {
   if (!sd) {
     return 1;
   }
-  sd->WriteToHandle();
+  // Reopen the token so we have a live handle to pass back into the
+  // round-trip SetSecurityInfo call.
+  HANDLE token2 = nullptr;
+  if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_ALL_ACCESS, &token2)) {
+    std::fprintf(stderr, "OpenProcessToken#2 failed: %lu\n", ::GetLastError());
+    return 1;
+  }
+  sd->WriteToHandle(token2, SE_KERNEL_OBJECT, LABEL_SECURITY_INFORMATION);
+  ::CloseHandle(token2);
   return 0;
 }
