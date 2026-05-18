@@ -79,20 +79,16 @@ class SecurityDescriptor {
   void set_dacl(AccessControlList a) { dacl_ = std::move(a); }
   void set_sacl(AccessControlList a) { sacl_ = std::move(a); }
 
-  // Mimic Chromium's SetSecurityDescriptor: read all four optional members
-  // and pass through to SetSecurityInfo, matching the call shape that crashes
-  // at security_descriptor.cc:166. The SetSecurityInfo call having a real side
-  // effect prevents the compiler from optimising the optional accesses away.
+  bool dacl_protected() const { return dacl_protected_; }
+  bool sacl_protected() const { return sacl_protected_; }
+
+  const std::optional<Sid>& owner() const { return owner_; }
+  const std::optional<Sid>& group() const { return group_; }
+  const std::optional<AccessControlList>& dacl() const { return dacl_; }
+  const std::optional<AccessControlList>& sacl() const { return sacl_; }
+
   bool WriteToHandle(HANDLE object, SE_OBJECT_TYPE type,
-                     SECURITY_INFORMATION info) const {
-    PSID o = owner_ ? const_cast<PSID>(owner_->GetPSID()) : nullptr;
-    PSID g = group_ ? const_cast<PSID>(group_->GetPSID()) : nullptr;
-    PACL d = dacl_ ? reinterpret_cast<PACL>(dacl_->get()) : nullptr;
-    PACL s = sacl_ ? reinterpret_cast<PACL>(sacl_->get()) : nullptr;
-    DWORD err = ::SetSecurityInfo(object, type, info, o, g, d, s);
-    std::printf("SetSecurityInfo err=%lu\n", err);
-    return err == ERROR_SUCCESS;
-  }
+                     SECURITY_INFORMATION info) const;
 
  private:
   std::optional<Sid> owner_;
@@ -102,6 +98,66 @@ class SecurityDescriptor {
   bool dacl_protected_ = false;
   bool sacl_protected_ = false;
 };
+
+// Mirror Chromium's anonymous-namespace template + UnwrapSid/UnwrapAcl helpers.
+namespace {
+
+PSID UnwrapSid(const std::optional<Sid>& sid) {
+  if (!sid) return nullptr;
+  return const_cast<PSID>(sid->GetPSID());
+}
+
+PACL UnwrapAcl(const std::optional<AccessControlList>& acl) {
+  if (!acl) return nullptr;
+  return reinterpret_cast<PACL>(acl->get());
+}
+
+template <typename T>
+bool SetSecurityDescriptor(const SecurityDescriptor& sd,
+                           T object,
+                           SE_OBJECT_TYPE object_type,
+                           SECURITY_INFORMATION security_info,
+                           DWORD(WINAPI* set_sd)(T,
+                                                 SE_OBJECT_TYPE,
+                                                 SECURITY_INFORMATION,
+                                                 PSID,
+                                                 PSID,
+                                                 PACL,
+                                                 PACL)) {
+  security_info &= ~(PROTECTED_DACL_SECURITY_INFORMATION |
+                     UNPROTECTED_DACL_SECURITY_INFORMATION |
+                     PROTECTED_SACL_SECURITY_INFORMATION |
+                     UNPROTECTED_SACL_SECURITY_INFORMATION);
+  if (security_info & DACL_SECURITY_INFORMATION) {
+    if (sd.dacl_protected()) {
+      security_info |= PROTECTED_DACL_SECURITY_INFORMATION;
+    } else {
+      security_info |= UNPROTECTED_DACL_SECURITY_INFORMATION;
+    }
+  }
+  if (security_info & SACL_SECURITY_INFORMATION) {
+    if (sd.sacl_protected()) {
+      security_info |= PROTECTED_SACL_SECURITY_INFORMATION;
+    } else {
+      security_info |= UNPROTECTED_SACL_SECURITY_INFORMATION;
+    }
+  }
+  DWORD error = set_sd(object, object_type, security_info,
+                       UnwrapSid(sd.owner()), UnwrapSid(sd.group()),
+                       UnwrapAcl(sd.dacl()), UnwrapAcl(sd.sacl()));
+  return error == ERROR_SUCCESS;
+}
+
+}  // namespace
+
+bool SecurityDescriptor::WriteToHandle(HANDLE handle,
+                                       SE_OBJECT_TYPE type,
+                                       SECURITY_INFORMATION info) const {
+  bool ok = SetSecurityDescriptor<HANDLE>(*this, handle, type, info,
+                                          ::SetSecurityInfo);
+  std::printf("WriteToHandle ok=%d\n", ok);
+  return ok;
+}
 
 // Helper: clone a PSID into a Sid. Mirrors Chromium's Sid::FromPSID.
 static Sid CloneSid(PSID psid) {
