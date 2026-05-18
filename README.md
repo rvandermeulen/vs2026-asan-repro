@@ -6,9 +6,28 @@ use-after-poison` (shadow byte `f7`, "Poisoned by user") inside
 `sandbox::HardenTokenIntegrityLevelPolicy` on Windows ASan builds using VS 2026
 18.6.0 (MSVC 14.51.36231) + clang-cl 20.
 
+## Status
+
+**Likely identified.** MSVC STL 14.51 added `__asan_poison_memory_region`
+calls to `<optional>` itself (see `__msvc_sanitizer_annotate_container.hpp`
+and the `_Asan_optional_should_annotate` checks in `<optional>` lines
+123/133/163/185). When an `optional<T>` is disengaged, the inner `_Value`
+storage is poisoned. Chromium's `SecurityDescriptor` contains four
+`optional<>` members; in `HardenTokenIntegrityLevelPolicy` only one
+(`sacl_`) is engaged, so the other three storages stay poisoned.
+`SetSecurityDescriptor` then appears to speculatively load through the
+disengaged optionals when inlined by clang-cl at -O2, hitting the `f7`
+shadow.
+
+The fix should be `-D_DISABLE_OPTIONAL_ANNOTATION` (in addition to the
+existing `_DISABLE_VECTOR_ANNOTATION` and `_DISABLE_STRING_ANNOTATION`).
+This repro currently doesn't reproduce the crash standalone - investigating
+what makes Firefox CI hit the speculative-load path while the standalone
+doesn't.
+
 ## What's been ruled out
 
-Already confirmed in Firefox CI that **none** of the following individually
+Confirmed in Firefox CI that **none** of the following individually
 fixes the crash, even though each is correctly applied to the failing TU:
 
 - `-D_DISABLE_VECTOR_ANNOTATION`
@@ -17,8 +36,6 @@ fixes the crash, even though each is correctly applied to the failing TU:
 - `-mllvm -asan-stack=0`
 - `-U_MSVC_STL_HARDENING`
 - No-op'ing absl's `ABSL_ANNOTATE_CONTIGUOUS_CONTAINER`
-
-So the source of `__asan_poison_memory_region` calls is not yet identified.
 
 ## Goal
 

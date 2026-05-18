@@ -54,6 +54,7 @@ REM   -Z7                                 debug info
     -D_MSVC_STL_HARDENING=1 ^
     -D_DISABLE_VECTOR_ANNOTATION ^
     -D_DISABLE_STRING_ANNOTATION ^
+    -D_DISABLE_OPTIONAL_ANNOTATION ^
     -D_HAS_EXCEPTIONS=0 ^
     -GR- ^
     -MD ^
