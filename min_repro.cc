@@ -249,6 +249,23 @@ DWORD HardenTokenIntegrityLevelPolicy(HANDLE token) {
 }
 
 int main() {
+  std::printf("sizeof(std::vector<char>)          = %zu\n",
+              sizeof(std::vector<char>));
+  std::printf("sizeof(std::unique_ptr<uint8_t[]>) = %zu\n",
+              sizeof(std::unique_ptr<uint8_t[]>));
+  std::printf("sizeof(Sid)                        = %zu\n", sizeof(Sid));
+  std::printf("sizeof(AccessControlList)          = %zu\n",
+              sizeof(AccessControlList));
+  std::printf("sizeof(std::optional<Sid>)         = %zu\n",
+              sizeof(std::optional<Sid>));
+  std::printf("sizeof(std::optional<AccessControlList>) = %zu\n",
+              sizeof(std::optional<AccessControlList>));
+  std::printf("sizeof(SecurityDescriptor)         = %zu\n",
+              sizeof(SecurityDescriptor));
+  std::printf("sizeof(std::optional<SecurityDescriptor>) = %zu\n",
+              sizeof(std::optional<SecurityDescriptor>));
+  std::printf("--- Firefox CI reports sd as 120 bytes wide ---\n");
+
   HANDLE token = nullptr;
   if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_ALL_ACCESS, &token)) {
     std::fprintf(stderr, "OpenProcessToken failed: %lu\n", ::GetLastError());
