@@ -27,6 +27,7 @@
 class Sid {
  public:
   Sid() = default;
+  explicit Sid(std::vector<char> bytes) : sid_(std::move(bytes)) {}
   Sid(const Sid&) = default;
   Sid(Sid&&) noexcept = default;
   Sid& operator=(const Sid&) = default;
@@ -44,6 +45,8 @@ class Sid {
 class AccessControlList {
  public:
   AccessControlList() = default;
+  AccessControlList(Sid sid, std::unique_ptr<uint8_t[]> acl)
+      : sid_(std::move(sid)), acl_(std::move(acl)) {}
   AccessControlList(const AccessControlList&) = delete;
   AccessControlList(AccessControlList&&) noexcept = default;
   AccessControlList& operator=(const AccessControlList&) = delete;
@@ -61,6 +64,11 @@ class SecurityDescriptor {
  public:
   SecurityDescriptor() = default;
   SecurityDescriptor(SecurityDescriptor&&) noexcept = default;
+
+  void set_owner(Sid s) { owner_ = std::move(s); }
+  void set_group(Sid s) { group_ = std::move(s); }
+  void set_dacl(AccessControlList a) { dacl_ = std::move(a); }
+  void set_sacl(AccessControlList a) { sacl_ = std::move(a); }
 
   // Mimic WriteToHandle: reads all four optional members. In Chromium this is
   // where the use-after-poison fires (security_descriptor.cc:166).
@@ -82,9 +90,24 @@ class SecurityDescriptor {
   bool sacl_protected_ = false;
 };
 
-// Mirror of SecurityDescriptor::FromHandle: returns by value via optional.
+// Mirror of SecurityDescriptor::FromHandle: returns by value via optional,
+// with all four members populated to mimic what FromHandle returns for a real
+// token security descriptor.
 static std::optional<SecurityDescriptor> FromHandle() {
-  return SecurityDescriptor();
+  SecurityDescriptor sd;
+  sd.set_owner(Sid(std::vector<char>(12, 0x01)));
+  sd.set_group(Sid(std::vector<char>(12, 0x02)));
+  {
+    auto acl_bytes = std::make_unique<uint8_t[]>(32);
+    sd.set_dacl(AccessControlList(Sid(std::vector<char>(12, 0x03)),
+                                  std::move(acl_bytes)));
+  }
+  {
+    auto acl_bytes = std::make_unique<uint8_t[]>(32);
+    sd.set_sacl(AccessControlList(Sid(std::vector<char>(12, 0x04)),
+                                  std::move(acl_bytes)));
+  }
+  return sd;
 }
 
 int main() {
