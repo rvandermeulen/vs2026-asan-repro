@@ -60,7 +60,7 @@ REM   -Z7                                 debug info
     -Z7 ^
     min_repro.cc ^
     /Fe:%OUT_EXE% ^
-    /link Advapi32.lib
+    /link Advapi32.lib Kernel32.lib
 
 if errorlevel 1 (
     echo BUILD FAILED

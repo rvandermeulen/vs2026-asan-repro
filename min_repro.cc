@@ -16,9 +16,13 @@
 // pattern is enough to reproduce f7 poisoning.
 
 #include <Windows.h>
+#include <AccCtrl.h>
+#include <AclAPI.h>
+#include <sddl.h>
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -90,28 +94,78 @@ class SecurityDescriptor {
   bool sacl_protected_ = false;
 };
 
-// Mirror of SecurityDescriptor::FromHandle: returns by value via optional,
-// with all four members populated to mimic what FromHandle returns for a real
-// token security descriptor.
-static std::optional<SecurityDescriptor> FromHandle() {
+// Helper: clone a PSID into a std::vector<char>.
+static Sid CloneSid(PSID psid) {
+  if (!psid) {
+    return Sid();
+  }
+  DWORD len = ::GetLengthSid(psid);
+  std::vector<char> bytes(len);
+  ::CopySid(len, bytes.data(), psid);
+  return Sid(std::move(bytes));
+}
+
+// Helper: clone a PACL plus its owner-SID into an AccessControlList.
+static AccessControlList CloneAcl(PACL acl, PSID owner_sid) {
+  Sid sid = CloneSid(owner_sid);
+  if (!acl) {
+    return AccessControlList(std::move(sid), nullptr);
+  }
+  ACL_SIZE_INFORMATION info{};
+  ::GetAclInformation(acl, &info, sizeof(info), AclSizeInformation);
+  auto bytes = std::make_unique<uint8_t[]>(info.AclBytesInUse);
+  std::memcpy(bytes.get(), acl, info.AclBytesInUse);
+  return AccessControlList(std::move(sid), std::move(bytes));
+}
+
+// Mirror of SecurityDescriptor::FromHandle. Calls the same Windows API
+// (GetSecurityInfo) Chromium uses, parses the kernel-returned buffer into our
+// minimal Sid / AccessControlList objects.
+static std::optional<SecurityDescriptor> FromHandle(HANDLE object,
+                                                    SE_OBJECT_TYPE type,
+                                                    SECURITY_INFORMATION info) {
+  PSID owner_psid = nullptr;
+  PSID group_psid = nullptr;
+  PACL dacl_pacl = nullptr;
+  PACL sacl_pacl = nullptr;
+  PSECURITY_DESCRIPTOR raw_sd = nullptr;
+  DWORD err = ::GetSecurityInfo(object, type, info, &owner_psid, &group_psid,
+                                &dacl_pacl, &sacl_pacl, &raw_sd);
+  if (err != ERROR_SUCCESS) {
+    std::fprintf(stderr, "GetSecurityInfo failed: %lu\n", err);
+    return std::nullopt;
+  }
+
   SecurityDescriptor sd;
-  sd.set_owner(Sid(std::vector<char>(12, 0x01)));
-  sd.set_group(Sid(std::vector<char>(12, 0x02)));
-  {
-    auto acl_bytes = std::make_unique<uint8_t[]>(32);
-    sd.set_dacl(AccessControlList(Sid(std::vector<char>(12, 0x03)),
-                                  std::move(acl_bytes)));
+  if (info & OWNER_SECURITY_INFORMATION) {
+    sd.set_owner(CloneSid(owner_psid));
   }
-  {
-    auto acl_bytes = std::make_unique<uint8_t[]>(32);
-    sd.set_sacl(AccessControlList(Sid(std::vector<char>(12, 0x04)),
-                                  std::move(acl_bytes)));
+  if (info & GROUP_SECURITY_INFORMATION) {
+    sd.set_group(CloneSid(group_psid));
   }
+  if (info & DACL_SECURITY_INFORMATION) {
+    sd.set_dacl(CloneAcl(dacl_pacl, owner_psid));
+  }
+  if (info & (LABEL_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION)) {
+    sd.set_sacl(CloneAcl(sacl_pacl, owner_psid));
+  }
+
+  ::LocalFree(raw_sd);
   return sd;
 }
 
 int main() {
-  std::optional<SecurityDescriptor> sd = FromHandle();
+  // Mirror Chromium's HardenTokenIntegrityLevelPolicy: open the current
+  // process token and read its label SACL.
+  HANDLE token = nullptr;
+  if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_ALL_ACCESS, &token)) {
+    std::fprintf(stderr, "OpenProcessToken failed: %lu\n", ::GetLastError());
+    return 1;
+  }
+
+  std::optional<SecurityDescriptor> sd =
+      FromHandle(token, SE_KERNEL_OBJECT, LABEL_SECURITY_INFORMATION);
+  ::CloseHandle(token);
   if (!sd) {
     return 1;
   }
