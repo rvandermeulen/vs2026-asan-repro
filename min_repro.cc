@@ -31,7 +31,13 @@
 class Sid {
  public:
   Sid() = default;
-  explicit Sid(std::vector<char> bytes) : sid_(std::move(bytes)) {}
+  // Mirror Chromium's iterator-range ctor:
+  //   Sid::Sid(const void* sid, size_t length)
+  //     : sid_(static_cast<const char*>(sid),
+  //            static_cast<const char*>(sid) + length) {}
+  Sid(const void* sid, size_t length)
+      : sid_(static_cast<const char*>(sid),
+             static_cast<const char*>(sid) + length) {}
   Sid(const Sid&) = default;
   Sid(Sid&&) noexcept = default;
   Sid& operator=(const Sid&) = default;
@@ -45,12 +51,12 @@ class Sid {
   std::vector<char> sid_;
 };
 
-// Mirror of base::win::AccessControlList.
+// Mirror of base::win::AccessControlList: only holds the ACL buffer.
 class AccessControlList {
  public:
   AccessControlList() = default;
-  AccessControlList(Sid sid, std::unique_ptr<uint8_t[]> acl)
-      : sid_(std::move(sid)), acl_(std::move(acl)) {}
+  explicit AccessControlList(std::unique_ptr<uint8_t[]> acl)
+      : acl_(std::move(acl)) {}
   AccessControlList(const AccessControlList&) = delete;
   AccessControlList(AccessControlList&&) noexcept = default;
   AccessControlList& operator=(const AccessControlList&) = delete;
@@ -59,7 +65,6 @@ class AccessControlList {
   void* get() const { return acl_.get(); }
 
  private:
-  Sid sid_;
   std::unique_ptr<uint8_t[]> acl_;
 };
 
@@ -94,28 +99,24 @@ class SecurityDescriptor {
   bool sacl_protected_ = false;
 };
 
-// Helper: clone a PSID into a std::vector<char>.
+// Helper: clone a PSID into a Sid. Mirrors Chromium's Sid::FromPSID.
 static Sid CloneSid(PSID psid) {
   if (!psid) {
     return Sid();
   }
-  DWORD len = ::GetLengthSid(psid);
-  std::vector<char> bytes(len);
-  ::CopySid(len, bytes.data(), psid);
-  return Sid(std::move(bytes));
+  return Sid(psid, ::GetLengthSid(psid));
 }
 
-// Helper: clone a PACL plus its owner-SID into an AccessControlList.
-static AccessControlList CloneAcl(PACL acl, PSID owner_sid) {
-  Sid sid = CloneSid(owner_sid);
+// Helper: clone a PACL into an AccessControlList. Mirrors Chromium's
+// AclToBuffer() in security/sandbox/chromium/base/win/access_control_list.cc.
+static AccessControlList CloneAcl(const ACL* acl) {
   if (!acl) {
-    return AccessControlList(std::move(sid), nullptr);
+    return AccessControlList(nullptr);
   }
-  ACL_SIZE_INFORMATION info{};
-  ::GetAclInformation(acl, &info, sizeof(info), AclSizeInformation);
-  auto bytes = std::make_unique<uint8_t[]>(info.AclBytesInUse);
-  std::memcpy(bytes.get(), acl, info.AclBytesInUse);
-  return AccessControlList(std::move(sid), std::move(bytes));
+  size_t size = acl->AclSize;
+  auto bytes = std::make_unique<uint8_t[]>(size);
+  std::memcpy(bytes.get(), acl, size);
+  return AccessControlList(std::move(bytes));
 }
 
 // Mirror of SecurityDescriptor::FromHandle. Calls the same Windows API
@@ -144,10 +145,10 @@ static std::optional<SecurityDescriptor> FromHandle(HANDLE object,
     sd.set_group(CloneSid(group_psid));
   }
   if (info & DACL_SECURITY_INFORMATION) {
-    sd.set_dacl(CloneAcl(dacl_pacl, owner_psid));
+    sd.set_dacl(CloneAcl(dacl_pacl));
   }
   if (info & (LABEL_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION)) {
-    sd.set_sacl(CloneAcl(sacl_pacl, owner_psid));
+    sd.set_sacl(CloneAcl(sacl_pacl));
   }
 
   ::LocalFree(raw_sd);
